@@ -101,9 +101,8 @@ void DebugRemoveFromSet(struct WSocket *socket, struct SocketSet *socket_set){
     }
 
     socket_set->num_sockets-=found;
-    socket_set->sockets = (socket_set->num_sockets)?realloc(socket_set->sockets,
-                                  socket_set->num_sockets*sizeof(int))
-                                  :NULL;
+    socket_set->sockets = realloc(socket_set->sockets,
+                                  socket_set->num_sockets*sizeof(int));
 #endif
 }
 
