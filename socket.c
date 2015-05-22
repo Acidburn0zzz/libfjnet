@@ -1,6 +1,8 @@
 #include "socket.h"
 #include <assert.h>
 #include <errno.h>
+#include <string.h>
+#include <stdio.h>
 #define LIBFJNET_INTERNAL
 #include "socket_definition.h"
 
@@ -21,10 +23,35 @@ const char *ExplainError_Socket(enum WSockErr err){
             return "Connection Timed Out.";
         case eAlreadyConnected:
             return "Already Connected.";
+        case ePermission:
+            return "Bad Permission";
+        case eBadAddress:
+            return "Bad Address";
         default:
         ;
     }
     return "Bad Error Value";
+}
+
+static enum WSockErr SockErr_From_Errno(){
+    
+    int err = errno;
+    
+    switch(err){
+        case EACCES:
+            return ePermission;
+        case EAFNOSUPPORT:
+        case EISDIR:
+        case EDESTADDRREQ:
+            return eBadAddress;
+        case EADDRINUSE:
+        case EADDRNOTAVAIL:
+            return eAlreadyConnected;
+    }
+    
+    printf("[libfjnet] Error unknown errno given %i | %s\n", err, strerror(err));
+    
+    return eFailure;
 }
 
 #if !(defined USE_BSDSOCK) && !(defined USE_WINSOCK) && !(defined USE_CYGSOCK)
@@ -209,8 +236,7 @@ enum WSockErr Connect_Socket(struct WSocket *aSocket, const char *aTo, unsigned 
 #elif defined USE_BSDSOCK || defined USE_CYGSOCK
 	(aSocket->sock<0)
 #endif
-	){
-
+    ){
         PRINT_LAST_ERROR("Error Creating Socket");
         return eFailure;
     }
@@ -264,20 +290,53 @@ enum WSockErr Connect_Socket(struct WSocket *aSocket, const char *aTo, unsigned 
 
         return eFailure;
     }
+    
+    return eSuccess;
+}
 
-    printf("Connected to %s on port number %lu. Using socket %i.\n", aTo, aPortNum, aSocket->sock);
+enum WSockErr Listen_Socket(struct WSocket *aSocket, unsigned long aPortNum){
+    
+    const int one = 1;
+    
+    aSocket->sockaddr->sin_family = AF_INET;
+    aSocket->sockaddr->sin_port = htons(aPortNum);
+    aSocket->sockaddr->sin_addr.s_addr = htonl(INADDR_ANY);
+    aSocket->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    
+    if(
+#if defined USE_WINSOCK
+	(aSocket->sock==INVALID_SOCKET)
+#elif defined USE_BSDSOCK || defined USE_CYGSOCK
+	(aSocket->sock<0)
+#endif
+	){
+        PRINT_LAST_ERROR("Error Creating Socket");
+        return eFailure;
+    }
+        
+    MakeNonBlocking(aSocket->sock);
+    
+    setsockopt(aSocket->sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(int));
+    
+    if(bind(aSocket->sock, (const void *)aSocket->sockaddr, sizeof(struct sockaddr_in))<0)
+        return SockErr_From_Errno();
+
+    if(listen(aSocket->sock, 16)<0)
+        return SockErr_From_Errno();
 
     return eSuccess;
+    
 }
 
 enum WSockErr Disconnect_Socket(struct WSocket *aSocket){
 
     assert(aSocket!=NULL);
     if(aSocket->sock){
-		InitSock();
+	InitSock();
         CLOSE_SOCKET(aSocket->sock);
         aSocket->sock = 0;
     }
+    
     return eSuccess;
 }
 
@@ -309,14 +368,15 @@ enum WSockErr Read_Socket(struct WSocket *aSocket, char **aTo){
 }
 
 enum WSockErr Write_Socket(struct WSocket *aSocket, const char *aToWrite){
+    return Write_Socket_Len(aSocket, aToWrite, strlen(aToWrite));
+}
+    
+enum WSockErr Write_Socket_Len(struct WSocket *aSocket, const char *aToWrite, unsigned long len){
 
     long err = 0;
-    unsigned long len;
     assert(aSocket!=NULL);
     assert(aSocket->sock!=0);
     assert(aToWrite!=NULL);
-
-    len = strlen(aToWrite);
 
     if(len==0)
         return eSuccess;
@@ -334,6 +394,23 @@ enum WSockErr Write_Socket(struct WSocket *aSocket, const char *aToWrite){
 
 enum WSockErr State_Socket(struct WSocket *aSocket){
     return CheckError(aSocket->sock);
+}
+
+struct WSocket *Accept_Socket(struct WSocket *aSocket){
+    
+    struct WSocket temp_socket, *new_socket = NULL;
+    socklen_t l = sizeof(struct sockaddr_in);
+    temp_socket.sock = accept(aSocket->sock, (void *)temp_socket.sockaddr, &l);
+    
+    if(temp_socket.sock<0){
+        return NULL;
+    }
+    
+    new_socket = Create_Socket();
+    memcpy(new_socket, &temp_socket, sizeof(struct WSocket));
+        
+    return new_socket;
+    
 }
 
 /* Gets the number of pending bytes. This can increase at any time, so
